@@ -3,11 +3,35 @@
 import tkinter as tk
 import random
 
+#Image class, added to streamline inclusion of images into Plant class.
+class Image:
+    def __init__(self, filename: str):
+        self.filename = filename
 
 class Plant:
-    def __init__(self, name, emoji):
+    def __init__(self, name, emoji, image: Image):
         self.name = name
         self.emoji = emoji
+        #Since we eventually want the program hooked up to a database of plants, I suggest we make each entry in the database have a randomized emoji from a
+        #pool of 15-20 choices. 
+        self.image = image
+    
+    #Getters and setters for things we want to be customizable.
+    @property
+    def name(self):
+        return self._name
+    
+    @property
+    def image(self):
+        return self._image
+    
+    @name.setter
+    def name(self, newname):
+        self._name = newname
+
+    @image.setter
+    def name(self, newimage: Image):
+        self._image = newimage
 
     def get_data(self):
         return {
@@ -16,7 +40,11 @@ class Plant:
             "uv": random.randint(0, 100)
         }
 
-
+"""
+Didn't change because I couldn't tell if it was intentional or not, but all of these functions aren't in the Plant class.
+Also, I couldn't tell if it served a specific purpose, but I don't think we need both the status and other feedback functions.
+At best, I think we could remove everything but status(), and with some crafty use of f-strings, make it work for the other feedback functions.
+"""
 def status(value, low, high):
     if value < low:
         return "LOW", "#e74c3c"   # red
@@ -65,6 +93,15 @@ class App:
         ]
 
         self.build_ui()
+    
+    def add_plant(self, newplant): #New function - adds a plant directly to the app's list of plants.
+        self.plants.append(newplant)
+    
+    def remove_plant(self, target): #New function - attempts to remove a plant from the app's list of plants. If it can't, it says so.
+        if target in self.plants:
+            self.plants.remove(target)
+        else:
+            return("Can't remove that, doesn't exist.")
 
     def build_ui(self):
         title = tk.Label(
