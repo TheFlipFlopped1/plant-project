@@ -1,204 +1,549 @@
-
+# app.py
 
 import tkinter as tk
 import random
+from database import get_plant_info
 
-#Image class, added to streamline inclusion of images into Plant class.
-class Image:
-    def __init__(self, filename: str):
-        self.filename = filename
 
+# =========================================================
+# PLANT CLASS
+# Stores all information about a single plant
+# Includes:
+# - identity (name, type, emoji)
+# - notes written by user
+# - health history (NEW: used for charting over time)
+# =========================================================
 class Plant:
-    def __init__(self, name, emoji, image: Image):
+    def __init__(self, name, plant_type, emoji):
         self.name = name
+        self.type = plant_type
         self.emoji = emoji
-        #Since we eventually want the program hooked up to a database of plants, I suggest we make each entry in the database have a randomized emoji from a
-        #pool of 15-20 choices. 
-        self.image = image
-    
-    #Getters and setters for things we want to be customizable.
-    @property
-    def name(self):
-        return self._name
-    
-    @property
-    def image(self):
-        return self._image
-    
-    @name.setter
-    def name(self, newname):
-        self._name = newname
 
-    @image.setter
-    def name(self, newimage: Image):
-        self._image = newimage
+        # user editable notes stored per plant
+        self.notes = ""
+
+        # stores health score history over time for charts
+        self.health_history = []
+
+        # acts like a time counter for graph progression
+        self.tick = 0
 
     def get_data(self):
+        # simulated sensor values (replace with real IoT later if needed)
         return {
             "temp": random.randint(10, 35),
             "moisture": random.randint(10, 90),
             "uv": random.randint(0, 100)
         }
 
-"""
-Didn't change because I couldn't tell if it was intentional or not, but all of these functions aren't in the Plant class.
-Also, I couldn't tell if it served a specific purpose, but I don't think we need both the status and other feedback functions.
-At best, I think we could remove everything but status(), and with some crafty use of f-strings, make it work for the other feedback functions.
-"""
-def status(value, low, high):
-    if value < low:
-        return "LOW", "#e74c3c"   # red
-    elif value > high:
-        return "HIGH", "#e74c3c"  # red
-    return "GOOD", "#2ecc71"      # green
+
+# =========================================================
+# MODEL
+# Holds all plant objects in memory
+# =========================================================
+class PlantModel:
+    def __init__(self):
+        self.plants = []
+
+    def add(self, plant):
+        self.plants.append(plant)
+
+    def remove(self, plant):
+        if plant in self.plants:
+            self.plants.remove(plant)
 
 
-#feedback functions
-def temp_feedback(value, state):
-    if state == "LOW":
-        return f"🌡 Temperature too low ({value}°C) — move to warmer area."
-    if state == "HIGH":
-        return f"🌡 Temperature too high ({value}°C) — move to shade."
-    return f"🌡 Temperature is good ({value}°C)."
+# =========================================================
+# UI TEXT HELPERS
+# Converts raw sensor values into readable text
+# =========================================================
+def temp_feedback(v):
+    return f"🌡 Temperature: {v}°C"
 
 
-def moisture_feedback(value, state):
-    if state == "LOW":
-        return f"💧 Soil too dry ({value}%) — water the plant."
-    if state == "HIGH":
-        return f"💧 Soil too moist ({value}%) — DO NOT water."
-    return f"💧 Soil moisture is good ({value}%)."
+def moisture_feedback(v):
+    return f"💧 Moisture: {v}%"
 
 
-def uv_feedback(value, state):
-    if state == "LOW":
-        return f"☀️ UV too low ({value}) — needs more light."
-    if state == "HIGH":
-        return f"☀️ UV too high ({value}) — reduce sunlight exposure."
-    return f"☀️ UV level is good ({value})."
+def uv_feedback(v):
+    return f"☀️ UV: {v}"
 
 
-class App:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("🌱 Smart Plant System")
-        self.root.configure(bg="#ecfdf5")
-        self.root.geometry("800x450")
+# =========================================================
+# HEALTH SCORE SYSTEM
+# Converts sensor values into a single 0–100 score
+# Used for chart + analytics
+# =========================================================
+def calculate_health_score(plant, data):
+    info = get_plant_info(plant.type)
+    if not info:
+        return 0
 
-        self.plants = [
-            Plant("Fern", "🌿"),
-            Plant("Cactus", "🌵"),
-            Plant("Flower", "🌸"),
-            Plant("Bonsai", "🪴")
-        ]
+    def score(value, range_tuple):
+        low, high = range_tuple
 
-        self.build_ui()
-    
-    def add_plant(self, newplant): #New function - adds a plant directly to the app's list of plants.
-        self.plants.append(newplant)
-    
-    def remove_plant(self, target): #New function - attempts to remove a plant from the app's list of plants. If it can't, it says so.
-        if target in self.plants:
-            self.plants.remove(target)
-        else:
-            return("Can't remove that, doesn't exist.")
+        # completely outside safe range
+        if value < low or value > high:
+            return 0
 
-    def build_ui(self):
-        title = tk.Label(
-            self.root,
-            text="🌱 Smart Plant Dashboard",
-            font=("Arial", 18, "bold"),
-            bg="#ecfdf5"
+        # near edges = warning level
+        if abs(value - low) < 3 or abs(value - high) < 3:
+            return 60
+
+        # fully healthy range
+        return 100
+
+    temp_score = score(data["temp"], info["temp"])
+    moisture_score = score(data["moisture"], info["moisture"])
+    uv_score = score(data["uv"], info["uv"])
+
+    return int((temp_score + moisture_score + uv_score) / 3)
+
+
+# =========================================================
+# HEALTH STATUS SYSTEM
+# Returns:
+# - status label
+# - color
+# - explanation of what is wrong
+# =========================================================
+def get_health_status(plant, data):
+    info = get_plant_info(plant.type)
+
+    if not info:
+        return "Unknown", "gray", "No plant data available"
+
+    issues = []
+
+    def check(value, range_tuple, name):
+        low, high = range_tuple
+
+        if value < low:
+            issues.append(f"{name} too low ({value} < {low})")
+            return "bad"
+
+        if value > high:
+            issues.append(f"{name} too high ({value} > {high})")
+            return "bad"
+
+        if abs(value - low) < 3:
+            issues.append(f"{name} slightly low")
+            return "warn"
+
+        if abs(value - high) < 3:
+            issues.append(f"{name} slightly high")
+            return "warn"
+
+        return "good"
+
+    results = [
+        check(data["temp"], info["temp"], "Temperature"),
+        check(data["moisture"], info["moisture"], "Moisture"),
+        check(data["uv"], info["uv"], "UV")
+    ]
+
+    if "bad" in results:
+        return "🔴 Needs Attention", "#ef4444", " | ".join(issues)
+
+    if "warn" in results:
+        return "🟡 Warning", "#f59e0b", " | ".join(issues)
+
+    return "🟢 Healthy", "#10b981", "All values in safe range"
+
+
+# =========================================================
+# HEALTH CHART (VISUAL ANALYTICS)
+# Shows plant health over time using:
+# - colored zones (red/yellow/green)
+# - line graph
+# - axis labels
+# =========================================================
+class HealthChart:
+    def __init__(self, parent):
+        self.canvas = tk.Canvas(parent, height=160, bg="white", highlightthickness=0)
+        self.canvas.pack(fill="x", pady=10)
+
+    def draw(self, history, plant):
+        from database import get_plant_info
+
+        self.canvas.delete("all")
+
+        if len(history) < 1:
+            self.canvas.create_text(250, 80, text="No data yet", fill="gray")
+            return
+
+        info = get_plant_info(plant.type)
+        if not info:
+            return
+
+        width = 500
+        height = 120
+        max_points = 30
+
+        data = history[-max_points:]
+
+        # axis
+        self.canvas.create_text(20, 10, text="100", fill="gray")
+        self.canvas.create_text(20, 60, text="50", fill="gray")
+        self.canvas.create_text(20, 110, text="0", fill="gray")
+
+        self.canvas.create_line(30, 10, 500, 10, fill="#f3f4f6")
+        self.canvas.create_line(30, 60, 500, 60, fill="#f3f4f6")
+        self.canvas.create_line(30, 110, 500, 110, fill="#f3f4f6")
+
+        step_x = width / max(len(data), 1)
+
+        def check(value, range_tuple):
+            low, high = range_tuple
+
+            if value < low or value > high:
+                return "bad"
+            if abs(value - low) < 3 or abs(value - high) < 3:
+                return "warn"
+            return "good"
+
+        for i, item in enumerate(data):
+            x = 30 + i * step_x
+            score = item["score"]
+
+            y = 120 - (score / 100 * 110)
+
+            d = item.get("data", {})
+
+            results = [
+                check(d.get("temp", 0), info["temp"]),
+                check(d.get("moisture", 0), info["moisture"]),
+                check(d.get("uv", 0), info["uv"])
+            ]
+
+            if "bad" in results:
+                color = "#ef4444"
+            elif "warn" in results:
+                color = "#f59e0b"
+            else:
+                color = "#10b981"
+
+            self.canvas.create_rectangle(
+                x - 4, y,
+                x + 4, 120,
+                fill=color,
+                outline=""
+            )
+
+
+# =========================================================
+# PLANT CARD (LEFT LIST ITEM)
+# Clickable plant selector
+# =========================================================
+class PlantCard:
+    def __init__(self, parent, plant, controller):
+        self.plant = plant
+        self.controller = controller
+
+        self.frame = tk.Frame(parent, bg="#f9fafb")
+
+        self.label = tk.Label(
+            self.frame,
+            text=f"{plant.emoji} {plant.name}",
+            bg="#f9fafb",
+            font=("Arial", 11),
+            anchor="w"
         )
-        title.pack(pady=10)
 
-        container = tk.Frame(self.root, bg="#ecfdf5")
-        container.pack(fill="both", expand=True)
+        self.label.pack(fill="x", padx=10, pady=8)
 
-        #left panel
-        left = tk.Frame(container, bg="#d1fae5", width=220)
-        left.pack(side="left", fill="y")
+        self.frame.bind("<Button-1>", self.click)
+        self.label.bind("<Button-1>", self.click)
 
-        tk.Label(
-            left,
-            text="My Plants",
-            bg="#d1fae5",
-            font=("Arial", 14, "bold")
-        ).pack(pady=10)
+        self.frame.bind("<Enter>", self.hover)
+        self.label.bind("<Enter>", self.hover)
 
-        for plant in self.plants:
-            tk.Button(
-                left,
-                text=f"{plant.emoji} {plant.name}",
-                bg="white",
-                relief="flat",
-                font=("Arial", 12),
-                command=lambda p=plant: self.show_plant(p)
-            ).pack(pady=6, fill="x", padx=10)
+        self.frame.bind("<Leave>", self.leave)
+        self.label.bind("<Leave>", self.leave)
 
-        #rignt panel
-        self.right = tk.Frame(container, bg="white")
+        self.frame.pack(fill="x", padx=10, pady=5)
+
+    def click(self, _):
+        self.controller.select(self.plant)
+
+    def hover(self, _):
+        self.frame.configure(bg="#e0f2fe")
+        self.label.configure(bg="#e0f2fe")
+
+    def leave(self, _):
+        self.frame.configure(bg="#f9fafb")
+        self.label.configure(bg="#f9fafb")
+
+
+# =========================================================
+# MAIN VIEW (UI LAYOUT)
+# =========================================================
+class PlantView:
+    def __init__(self, root, controller):
+        self.root = root
+        self.controller = controller
+
+        self.root.title("Plant Dashboard")
+        self.root.geometry("900x520")
+        self.root.configure(bg="#f3f4f6")
+
+        self.current_plant = None
+
+        self.temp_label = None
+        self.moisture_label = None
+        self.uv_label = None
+        self.status_label = None
+        self.reason_label = None
+        self.notes_box = None
+        self.chart = None
+
+        self.build()
+        self.render_selected()
+        self.auto_refresh()
+
+    def auto_refresh(self):
+        self.update_live_data()
+        self.root.after(3000, self.auto_refresh)
+
+    def build(self):
+        self.container = tk.Frame(self.root, bg="#f3f4f6")
+        self.container.pack(fill="both", expand=True, padx=15, pady=15)
+
+        self.left = tk.Frame(self.container, bg="white")
+        self.left.pack(side="left", fill="y", padx=(0, 10))
+
+        tk.Label(self.left, text="🌱 My Plants",
+                 bg="white", font=("Arial", 16, "bold")).pack(pady=10)
+
+        self.filter_var = tk.StringVar(value="All")
+
+        options = ["All", "Houseplant", "Flowering Plant", "Fruit", "Vegetable"]
+
+        tk.OptionMenu(
+            self.left,
+            self.filter_var,
+            *options,
+            command=self.controller.set_filter
+        ).pack(fill="x", padx=10, pady=5)
+
+        tk.Button(self.left, text="+ Add Plant",
+                  bg="#10b981", fg="white",
+                  command=self.controller.open_add_plant).pack(fill="x", padx=10, pady=5)
+
+        tk.Button(self.left, text="Delete Plant",
+                  bg="#ef4444", fg="white",
+                  command=self.controller.delete_selected).pack(fill="x", padx=10, pady=5)
+
+        self.list_frame = tk.Frame(self.left, bg="white")
+        self.list_frame.pack(fill="both", expand=True)
+
+        self.right = tk.Frame(self.container, bg="#f3f4f6")
         self.right.pack(side="right", fill="both", expand=True)
 
-        tk.Label(
-            self.right,
-            text="Select a plant 🌱",
-            font=("Arial", 14),
-            bg="white"
-        ).pack(pady=40)
+        self.detail = tk.Frame(self.right, bg="white",
+                               padx=30, pady=30,
+                               bd=2, relief="groove")
+        self.detail.pack(fill="both", expand=True, padx=20, pady=20)
 
-    def show_plant(self, plant):
+        self.refresh()
+
+    def refresh(self):
+        for w in self.list_frame.winfo_children():
+            w.destroy()
+
+        plants = self.controller.model.plants
+        f = self.controller.filter_type
+
+        if f != "All":
+            plants = [
+                p for p in plants
+                if get_plant_info(p.type)
+                and get_plant_info(p.type)["category"] == f
+            ]
+
+        if not plants:
+            tk.Label(self.list_frame, text="No plants yet 🌱",
+                     bg="white", fg="#6b7280").pack(pady=20)
+        else:
+            for plant in plants:
+                PlantCard(self.list_frame, plant, self.controller)
+
+    def update_live_data(self):
+        if not self.controller.selected:
+            return
+
+        plant = self.controller.selected
         data = plant.get_data()
 
-        t_s, t_c = status(data["temp"], 18, 26)
-        m_s, m_c = status(data["moisture"], 40, 70)
-        u_s, u_c = status(data["uv"], 30, 70)
+        status, color, reason = get_health_status(plant, data)
 
-        for widget in self.right.winfo_children():
-            widget.destroy()
+        if self.status_label:
+            self.status_label.config(text=status, fg=color)
 
-        #title
-        tk.Label(
-            self.right,
-            text=f"{plant.emoji} {plant.name}",
-            font=("Arial", 20, "bold"),
-            bg="white"
-        ).pack(pady=10)
+        if self.reason_label:
+            self.reason_label.config(text=reason)
 
-        #status colors
+        if self.temp_label:
+            self.temp_label.config(text=temp_feedback(data["temp"]))
 
-        tk.Label(
-            self.right,
-            text=temp_feedback(data["temp"], t_s),
-            fg=t_c,
-            bg="white",
-            font=("Arial", 11),
-            wraplength=500,
-            justify="left"
-        ).pack(pady=6)
+        if self.moisture_label:
+            self.moisture_label.config(text=moisture_feedback(data["moisture"]))
 
-        tk.Label(
-            self.right,
-            text=moisture_feedback(data["moisture"], m_s),
-            fg=m_c,
-            bg="white",
-            font=("Arial", 11),
-            wraplength=500,
-            justify="left"
-        ).pack(pady=6)
+        if self.uv_label:
+            self.uv_label.config(text=uv_feedback(data["uv"]))
 
-        tk.Label(
-            self.right,
-            text=uv_feedback(data["uv"], u_s),
-            fg=u_c,
-            bg="white",
-            font=("Arial", 11),
-            wraplength=500,
-            justify="left"
-        ).pack(pady=6)
+        score = calculate_health_score(plant, data)
+
+        plant.tick += 1
+        plant.health_history.append({"time": plant.tick, "score": score, "data": data})
+
+        if len(plant.health_history) > 50:
+            plant.health_history.pop(0)
+
+        if self.chart:
+            self.chart.draw(plant.health_history, plant)
+
+    def render_selected(self):
+        for w in self.detail.winfo_children():
+            w.destroy()
+
+        plant = self.controller.selected
+        self.current_plant = plant
+
+        if not plant:
+            tk.Label(self.detail, text="Select a plant to see information",
+                    bg="white", fg="gray", font=("Arial", 14)).pack(pady=50)
+            return
+
+        data = plant.get_data()
+        info = get_plant_info(plant.type)
+
+        tk.Label(self.detail, text=f"{plant.emoji} {plant.name}",
+                 font=("Arial", 26, "bold"),
+                 bg="white").pack(pady=10)
+
+        status, color, reason = get_health_status(plant, data)
+
+        self.status_label = tk.Label(self.detail, text=status,
+                                     fg=color, bg="white",
+                                     font=("Arial", 14, "bold"))
+        self.status_label.pack(pady=5)
+
+        self.reason_label = tk.Label(self.detail, text=reason,
+                                     bg="white", fg="#6b7280",
+                                     wraplength=500)
+        self.reason_label.pack(pady=5)
+
+        tk.Frame(self.detail, bg="#e5e7eb", height=2).pack(fill="x", pady=10)
+
+        self.temp_label = tk.Label(self.detail, bg="white")
+        self.temp_label.pack()
+
+        self.moisture_label = tk.Label(self.detail, bg="white")
+        self.moisture_label.pack()
+
+        self.uv_label = tk.Label(self.detail, bg="white")
+        self.uv_label.pack()
+
+        tk.Frame(self.detail, bg="#e5e7eb", height=2).pack(fill="x", pady=10)
+
+        if info:
+            tk.Label(self.detail, text="🌿 Care Info",
+                     bg="white", font=("Arial", 16, "bold")).pack()
+
+            tk.Label(self.detail, text=info["info"],
+                     bg="white", wraplength=600,
+                     justify="left").pack(pady=5)
+
+        tk.Label(self.detail, text="📝 Notes",
+                 bg="white", font=("Arial", 16, "bold")).pack()
+
+        self.notes_box = tk.Text(self.detail, height=5, width=50)
+        self.notes_box.pack()
+        self.notes_box.insert("1.0", plant.notes)
+
+        def save_notes():
+            plant.notes = self.notes_box.get("1.0", tk.END).strip()
+
+        tk.Button(self.detail, text="Save Notes",
+                  bg="#3b82f6", fg="white",
+                  command=save_notes).pack(pady=5)
+
+        tk.Label(self.detail, text="📊 Health History",
+                 bg="white", font=("Arial", 16, "bold")).pack(pady=(15, 5))
+
+        self.chart = HealthChart(self.detail)
 
 
+# =========================================================
+# CONTROLLER
+# =========================================================
+class PlantController:
+    def __init__(self, root):
+        self.model = PlantModel()
+        self.selected = None
+        self.filter_type = "All"
+        self.view = PlantView(root, self)
+
+    def select(self, plant):
+        self.selected = plant
+        self.view.render_selected()
+        self.view.refresh()
+
+    def delete_selected(self):
+        if self.selected:
+            self.model.remove(self.selected)
+            self.selected = None
+            self.view.refresh()
+
+    def set_filter(self, value):
+        self.filter_type = value
+        self.view.refresh()
+
+    def open_add_plant(self):
+        win = tk.Toplevel(self.view.root)
+        win.title("Add Plant")
+        win.geometry("300x200")
+
+        tk.Label(win, text="Plant Name").pack()
+        entry = tk.Entry(win)
+        entry.pack()
+
+        types = ["Fern", "Cactus", "Rose", "Orchid",
+                 "Petunia", "Lavender",
+                 "Strawberry", "Blueberry",
+                 "Tomato", "Carrot", "Lettuce"]
+
+        selected = tk.StringVar(value=types[0])
+        tk.OptionMenu(win, selected, *types).pack()
+
+        def add():
+            name = entry.get().strip()
+            if not name:
+                return
+
+            emoji = {
+                "Fern": "🌿", "Cactus": "🌵",
+                "Rose": "🌹", "Orchid": "🌸",
+                "Petunia": "🌺", "Lavender": "💜",
+                "Strawberry": "🍓", "Blueberry": "🫐",
+                "Tomato": "🍅", "Carrot": "🥕",
+                "Lettuce": "🥬"
+            }[selected.get()]
+
+            self.model.add(Plant(name, selected.get(), emoji))
+            win.destroy()
+            self.view.refresh()
+
+        tk.Button(win, text="Add",
+                  bg="#10b981", fg="white",
+                  command=add).pack(pady=10)
+
+
+# =========================================================
+# START PROGRAM
+# =========================================================
 if __name__ == "__main__":
     root = tk.Tk()
-    app = App(root)
+    PlantController(root)
     root.mainloop()
